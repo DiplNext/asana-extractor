@@ -9,7 +9,7 @@ Go CLI that extracts Asana **users** and **projects** via the Asana REST API (`h
 - Extract users of the configured workspace (`GET /users?workspace=<gid>`)
 - Extract projects (archived included) of that workspace (`GET /projects?workspace=<gid>`)
 - Follow cursor pagination (`limit=100`, opaque `next_page.offset`) until `next_page` is null
-- One JSON array per resource type: `output/users.json`, `output/projects.json`, streamed and atomically replaced
+- One JSON object per resource: `output/users/<gid>.json`, `output/projects/<gid>.json`, atomic writes
 - Run every 5m (default), every 30s, or once (`--once`)
 - Sequential paced requests; honor `429 Retry-After`; bounded jittered retries for 5xx/transport errors
 

@@ -1,6 +1,5 @@
 // Command asana-extractor exports the users and projects of one Asana
-// workspace to one JSON array file per resource type, once or on a fixed
-// interval.
+// workspace to one JSON file per resource, once or on a fixed interval.
 package main
 
 import (

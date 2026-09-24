@@ -2,7 +2,7 @@
 
 ## Overview
 
-`asana-extractor` is a single-purpose CLI: resolve config → list users and projects of one Asana workspace → write one JSON array file per resource type, once or on a schedule. Beyond pagination, pacing, retries and atomic writes there is no business logic, so a layered structure is enough: CLI wiring on top, one orchestration package, two leaf packages for I/O.
+`asana-extractor` is a single-purpose CLI: resolve config → list users and projects of one Asana workspace → write one JSON file per resource, once or on a schedule. Beyond pagination, pacing, retries and atomic writes there is no business logic, so a layered structure is enough: CLI wiring on top, one orchestration package, two leaf packages for I/O.
 
 Concrete types are wired directly (no interfaces between layers): each seam is tested through real boundaries instead of mocks — `httptest` fake Asana (`internal/asanatest`), temp directories, and injected `now`/`sleep` functions for time.
 
@@ -18,7 +18,7 @@ Concrete types are wired directly (no interfaces between layers): each seam is t
 cmd/asana-extractor/     main.go: signals, config.Load, logger, wiring, once vs scheduler, exit codes (0/1/2)
 internal/config/         flags + env + .env parsing, precedence, validation
 internal/asana/          Client: bearer auth, paginated ListUsers/ListProjects (page callbacks), pacer, retries, APIError
-internal/storage/        Store.Begin(kind) → ArrayWriter.Add/Commit/Abort: streamed array, atomic temp+rename per type, CleanupTemp
+internal/storage/        Store.Put(kind, gid, v): atomic temp+rename per resource, CleanupTemp
 internal/extractor/      Extractor.Run: users then projects, page by page → storage; stats + result logging
 internal/scheduler/      immediate run + fixed-grid schedule, skip overruns, no backlog
 internal/asanatest/      in-memory fake Asana API (test-only helper)
@@ -50,7 +50,7 @@ asanatest           → stdlib only (imported by tests)
 
 1. **Thin main:** `run(ctx, args, getenv, readFile, stderr) int` is the testable entry point.
 2. **One pacer per process:** every request, including retries, passes through it; 429 `Retry-After` becomes a shared cooldown and is never shortened.
-3. **Atomic, idempotent output:** temp file in the destination dir → fsync → rename; one streamed array per resource type, renamed into place only after a complete listing; unchanged content is not rewritten.
+3. **Atomic, idempotent output:** temp file in the destination dir → fsync → rename; unchanged content is not rewritten; absent resources are not deleted.
 4. **Deterministic time:** anything that waits takes injectable `now`/`sleep`.
 5. **Fail per run, not per process:** periodic mode logs failed runs and continues; `--once` exits nonzero.
 

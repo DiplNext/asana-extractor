@@ -24,7 +24,7 @@ Go CLI that extracts Asana users and projects via the REST API into JSON files. 
 │   ├── config/            # flags / env / .env, validation
 │   ├── extractor/         # one extraction run
 │   ├── scheduler/         # periodic scheduling
-│   └── storage/           # streamed, atomic JSON array file per resource type
+│   └── storage/           # atomic per-resource JSON files
 ├── .ai-factory/           # AI Factory config, description, architecture, rules, research
 ├── .claude/               # Claude Code skills (aif-*, asana-api) and agents
 ├── .env.example           # configuration template (copy to .env)

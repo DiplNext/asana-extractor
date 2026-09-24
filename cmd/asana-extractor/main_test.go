@@ -52,17 +52,30 @@ func env(fake *asanatest.Server, out string, extra map[string]string) func(strin
 
 func noFiles(string) ([]byte, error) { return nil, os.ErrNotExist }
 
-func readArray(t *testing.T, path string) []map[string]any {
+func readObject(t *testing.T, path string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var arr []map[string]any
-	if err := json.Unmarshal(data, &arr); err != nil {
-		t.Fatalf("%s: not a JSON array of objects: %v", path, err)
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("%s: not a single JSON object: %v", path, err)
 	}
-	return arr
+	return obj
+}
+
+func dirNames(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return strings.Join(names, ",")
 }
 
 func TestOnceEndToEnd(t *testing.T) {
@@ -87,35 +100,29 @@ func TestOnceEndToEnd(t *testing.T) {
 		t.Fatalf("exit=%d logs:\n%s", code, logs)
 	}
 
-	// Exactly two files: one JSON array per resource type, all pages merged in API order.
-	entries, err := os.ReadDir(out)
-	if err != nil {
-		t.Fatal(err)
+	// output/users/<gid>.json and output/projects/<gid>.json, one object per file.
+	if got := dirNames(t, out); got != "projects,users" {
+		t.Fatalf("output dir: %s", got)
 	}
-	var names []string
-	for _, e := range entries {
-		names = append(names, e.Name())
+	if got := dirNames(t, filepath.Join(out, "users")); got != "101.json,102.json,103.json" {
+		t.Fatalf("users dir: %s", got)
 	}
-	if strings.Join(names, ",") != "projects.json,users.json" {
-		t.Fatalf("output dir contents: %v", names)
+	if got := dirNames(t, filepath.Join(out, "projects")); got != "201.json,202.json" {
+		t.Fatalf("projects dir: %s", got)
 	}
-
-	users := readArray(t, filepath.Join(out, "users.json"))
-	if len(users) != 3 || users[0]["gid"] != "101" || users[1]["gid"] != "102" || users[2]["gid"] != "103" {
-		t.Fatalf("users: %v", users)
+	for _, gid := range []string{"101", "102", "103"} {
+		if obj := readObject(t, filepath.Join(out, "users", gid+".json")); obj["gid"] != gid || obj["data"] != nil {
+			t.Fatalf("user %s: %v", gid, obj)
+		}
 	}
-	if users[1]["email"] != nil || users[0]["email"] != "ann@example.com" {
-		t.Fatalf("missing email should be null: %v", users[1])
+	if u := readObject(t, filepath.Join(out, "users", "102.json")); u["email"] != nil {
+		t.Fatalf("missing email should be null: %v", u)
 	}
-
-	projects := readArray(t, filepath.Join(out, "projects.json"))
-	if len(projects) != 2 {
-		t.Fatalf("projects: %v", projects)
-	}
-	if p := projects[0]; p["name"] != "Launch" || p["owner"].(map[string]any)["name"] != "Ann" || p["internal_field"] != nil {
+	p := readObject(t, filepath.Join(out, "projects", "201.json"))
+	if p["name"] != "Launch" || p["owner"].(map[string]any)["name"] != "Ann" || p["internal_field"] != nil {
 		t.Fatalf("project 201: %v", p)
 	}
-	if p := projects[1]; p["archived"] != true || p["owner"] != nil {
+	if p := readObject(t, filepath.Join(out, "projects", "202.json")); p["archived"] != true || p["owner"] != nil {
 		t.Fatalf("archived project must be exported: %v", p)
 	}
 	if fake.Requests("/users") != 2 || fake.Requests("/projects") != 1 {
@@ -123,21 +130,6 @@ func TestOnceEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), token) {
 		t.Fatal("token leaked into logs")
-	}
-}
-
-func TestEmptyWorkspaceWritesEmptyArrays(t *testing.T) {
-	fake := asanatest.New(t, token, ws)
-	out := filepath.Join(t.TempDir(), "output")
-	logs := &syncBuffer{}
-	if code := run(t.Context(), []string{"--once"}, env(fake, out, nil), noFiles, logs); code != exitOK {
-		t.Fatalf("exit=%d logs:\n%s", code, logs)
-	}
-	for _, f := range []string{"users.json", "projects.json"} {
-		data, err := os.ReadFile(filepath.Join(out, f))
-		if err != nil || strings.TrimSpace(string(data)) != "[]" {
-			t.Fatalf("%s = %q, %v", f, data, err)
-		}
 	}
 }
 
@@ -205,7 +197,7 @@ func TestPeriodicRecoversAfterFailedRunAndStopsOnCancel(t *testing.T) {
 	if failedAt < 0 || failedAt > successAt {
 		t.Fatalf("expected failed run before success:\n%s", l)
 	}
-	if _, err := os.Stat(filepath.Join(out, "users.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(out, "users", "1000.json")); err != nil {
 		t.Fatal("user file missing after recovery")
 	}
 	if !strings.Contains(l, "shutdown complete") {
@@ -256,7 +248,7 @@ func TestEnvFileIsLoaded(t *testing.T) {
 	if code := run(t.Context(), []string{"--once"}, getenv, readFile, logs); code != exitOK {
 		t.Fatalf("exit=%d logs:\n%s", code, logs)
 	}
-	if _, err := os.Stat(filepath.Join(out, "users.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(out, "users", "1000.json")); err != nil {
 		t.Fatal(err)
 	}
 }

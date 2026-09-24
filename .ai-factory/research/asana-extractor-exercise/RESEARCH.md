@@ -1,6 +1,6 @@
 # Research: Asana Extractor exercise
 
-Updated: 2026-09-24 15:21
+Updated: 2026-09-24 15:29
 Status: active
 Index: [INDEX.md](INDEX.md)
 
@@ -17,7 +17,7 @@ Constraints:
 - `GET /users` / `GET /projects` expose no `modified_since` filter → every run is a full listing.
 Requirements:
 - Config keys: `ASANA_ACCESS_TOKEN`, `ASANA_WORKSPACE_GID`, output dir, interval, HTTP timeout, rate limit, max retries; flags `--interval`, `--once`; precedence flag > process env > `.env` file > default; validate at startup (exit 2).
-- Output `output/users.json`, `output/projects.json`: one JSON array per resource type, streamed page by page into a temp file in the same dir and renamed only after a complete listing; temp cleanup; failed listing keeps the previous file. (Supersedes the original one-file-per-resource layout; changed on user request 2026-09-24.)
+- Output `output/users/<gid>.json`, `output/projects/<gid>.json`, one object per file, atomic temp+rename in the same dir, temp cleanup, no deletion of absent resources. (The JSON-array layout tried on 2026-09-24 was reverted on user request; see Sessions.)
 - Scheduler: immediate first run, one run at a time, skipped slots during overrun, no catch-up, next start is the first grid slot strictly in the future.
 - Periodic mode logs failures and continues; `--once` exits nonzero on failure.
 Decisions:
@@ -25,7 +25,7 @@ Decisions:
 - Retries: transport errors, 429, 500/502/503/504; max retries default 5; 429 with valid `Retry-After` waits exactly that (never capped); missing/invalid → equal-jitter exponential backoff (base 1s, cap 30s). 4xx (400/401/402/403/404) never retried. 200 with malformed JSON is permanent.
 - Archived projects included (no `archived` param); `archived` field written to each file.
 - Schemas: user `{gid,name,email}`; project `{gid,name,archived,completed,color,created_at,modified_at,due_on,start_on,privacy_setting,permalink_url,owner,team,workspace}` with nullable refs; values requested through `opt_fields`, no per-resource detail calls.
-- GIDs are strings (no longer used as filenames after the array-output change).
+- GIDs are strings and must match `^[A-Za-z0-9_-]{1,64}$` before becoming filenames.
 - Packages: `cmd/asana-extractor`, `internal/config`, `internal/asana`, `internal/storage`, `internal/extractor`, `internal/scheduler`; time injected via `now`/`sleep` funcs.
 Risks:
 - Pending invitations: API visibility of invited-but-not-accepted users is not documented; README instructs verifying via `GET /users?workspace=` instead of assuming.
@@ -60,5 +60,12 @@ Key notes:
 - Superseded: "one object per file" / `<kind>/<gid>.json` layout and GID-as-filename validation.
 - New behavior: `output/users.json`, `output/projects.json`; streamed (memory bounded by one page), atomic rename only after a full listing, identical content not rewritten; deleted/inaccessible resources drop out on the next successful run (no stale entries), but the two files are published independently.
 - Coherence gate: pass (Active Summary Requirements/Decisions updated to match).
+Links (paths): `internal/storage/storage.go`, `internal/extractor/extractor.go`, `README.md`
+### 2026-09-24 15:29 — Output format reverted to one file per resource
+What changed: At the user's request the JSON-array output (`users.json`, `projects.json`) was reverted to the exercise's original layout `output/<kind>/<gid>.json`, one object per file.
+Key notes:
+- Superseded: the "Output format changed to JSON arrays" session above.
+- Restored behavior: per-resource atomic temp+rename writes, GID filename validation, identical content not rewritten, files of absent resources kept, per-file consistency (a failed run keeps pages already written).
+- Coherence gate: pass (Active Summary Requirements/Decisions restored).
 Links (paths): `internal/storage/storage.go`, `internal/extractor/extractor.go`, `README.md`
 <!-- aif:sessions:end -->

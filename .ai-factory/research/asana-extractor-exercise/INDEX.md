@@ -3,7 +3,7 @@
 
 Topic: Asana users/projects extractor CLI (take-home exercise)
 Slug: asana-extractor-exercise
-Updated: 2026-09-24 15:21
+Updated: 2026-09-24 15:29
 Status: active
 
 ## Purpose

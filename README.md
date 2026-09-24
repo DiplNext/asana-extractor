@@ -1,10 +1,10 @@
 # asana-extractor
 
-Go CLI that authenticates to Asana with a personal access token (PAT), extracts the **users** and **projects** of one workspace, and writes each resource type to one JSON array file (`output/users.json`, `output/projects.json`). It runs every 5 minutes (default), every 30 seconds, or once.
+Go CLI that authenticates to Asana with a personal access token (PAT), extracts the **users** and **projects** of one workspace, and writes each resource to its own JSON file. It runs every 5 minutes (default), every 30 seconds, or once.
 
 - Go standard library only (no third-party modules).
 - Sequential, paced requests; bounded retries that honor `Retry-After`.
-- Atomic writes; a file is only ever replaced by a complete listing, never left truncated.
+- Atomic per-file writes; the output never contains truncated JSON.
 
 ```sh
 cp .env.example .env         # fill in token + workspace GID
@@ -78,57 +78,47 @@ With `--once`, the interval is ignored (but still validated).
 
 ```
 output/
-  users.json       # JSON array of every visible user
-  projects.json    # JSON array of every visible project (archived included)
+  users/
+    <gid>.json
+  projects/
+    <gid>.json
 ```
 
-Each file is one JSON array of resource objects (not the API envelope), in API order: users sorted by GID, projects in the order Asana lists them. An empty workspace produces `[]`.
-
-`users.json`:
+Each file holds exactly one resource object, not the API envelope or an array:
 
 ```json
-[
-  {
-    "gid": "1200000000000101",
-    "name": "Ann Example",
-    "email": "ann@example.com"
-  },
-  {
-    "gid": "1200000000000102",
-    "name": "Bob Example",
-    "email": null
-  }
-]
+{
+  "gid": "1200000000000101",
+  "name": "Ann Example",
+  "email": "ann@example.com"
+}
 ```
-
-`projects.json`:
 
 ```json
-[
-  {
-    "gid": "1200000000000201",
-    "name": "Launch",
-    "archived": false,
-    "completed": false,
-    "color": "light-green",
-    "created_at": "2026-09-01T10:00:00.000Z",
-    "modified_at": "2026-09-20T08:30:00.000Z",
-    "due_on": null,
-    "start_on": null,
-    "privacy_setting": "public_to_workspace",
-    "permalink_url": "https://app.asana.com/0/1200000000000201/1200000000000201",
-    "owner": { "gid": "1200000000000101" },
-    "team": { "gid": "1200000000000301", "name": "Engineering" },
-    "workspace": { "gid": "1200000000000001", "name": "Test Workspace" }
-  }
-]
+{
+  "gid": "1200000000000201",
+  "name": "Launch",
+  "archived": false,
+  "completed": false,
+  "color": "light-green",
+  "created_at": "2026-09-01T10:00:00.000Z",
+  "modified_at": "2026-09-20T08:30:00.000Z",
+  "due_on": null,
+  "start_on": null,
+  "privacy_setting": "public_to_workspace",
+  "permalink_url": "https://app.asana.com/0/1200000000000201/1200000000000201",
+  "owner": { "gid": "1200000000000101" },
+  "team": { "gid": "1200000000000301", "name": "Engineering" },
+  "workspace": { "gid": "1200000000000001", "name": "Test Workspace" }
+}
 ```
 
-- **Fields** come from `opt_fields` on the list endpoints, so there are no per-resource detail requests. Users: `name,email`. Projects: `name,archived,completed,color,created_at,modified_at,due_on,start_on,privacy_setting,permalink_url,owner,team,team.name,workspace,workspace.name`. Only values listed in Asana's documented `opt_fields` enum are requested; e.g. `owner.name` is not in that list, so `owner` carries only its `gid` (confirmed on a live run); look the name up in `users.json` by `gid`.
-- **Optional values** are written as `null` when Asana omits them or returns null (e.g. `email` hidden from the token's user, a project without an owner). Timestamps and dates are kept exactly as Asana returns them. GIDs are strings.
-- **Archived projects are included.** The `archived` query parameter is not sent, so both archived and active projects are listed, and each object carries `"archived"`.
-- **Writes are streamed and atomic.** Each page is appended to a temp file in the output directory as it arrives (memory stays bounded by one page, however large the workspace). Only after the **whole listing** of that resource type succeeds is the temp file `fsync`ed and renamed over `users.json` / `projects.json`. If the listing or the write fails, the temp file is removed and the previous file stays as it was. Temp files left by a hard crash (e.g. `SIGKILL`) and older than one minute are removed at the next startup. If the new content is identical to the file on disk, the file is not rewritten (`unchanged` in the logs).
-- **Semantics:** each file is the **latest complete listing** of that resource type. Resources deleted in Asana, or no longer visible to the token, disappear from the array on the next successful run. The two files are published independently: if the users listing fails but the projects listing succeeds, `projects.json` is fresh and `users.json` keeps the previous run's listing. So the pair is **not a transactionally consistent snapshot**, and every run logs `status=success`, `status=failed` or `status=canceled`.
+- **Fields** come from `opt_fields` on the list endpoints, so there are no per-resource detail requests. Users: `name,email`. Projects: `name,archived,completed,color,created_at,modified_at,due_on,start_on,privacy_setting,permalink_url,owner,team,team.name,workspace,workspace.name`. Only values listed in Asana's documented `opt_fields` enum are requested; e.g. `owner.name` is not in that list, so `owner` carries only its `gid` (confirmed on a live run); look the name up in `users/<gid>.json`.
+- **Optional values** are written as `null` when Asana omits them or returns null (e.g. `email` hidden from the token's user, a project without an owner). Timestamps and dates are kept exactly as Asana returns them.
+- **Archived projects are included.** The `archived` query parameter is not sent, so both archived and active projects are listed, and each file carries `"archived"`.
+- **Filenames** are the resource GID. GIDs are kept as strings and must match `^[A-Za-z0-9_-]{1,64}$` before being used as a filename (this rejects path traversal).
+- **Writes** are atomic: the JSON goes to a temp file in the destination directory, is `fsync`ed, then renamed over `<gid>.json`. If a write fails, the temp file is removed and the previous file stays as it was. Temp files left by a hard crash (e.g. `SIGKILL`) and older than one minute are removed at the next startup. Files whose content is unchanged are not rewritten.
+- **Semantics:** the directory holds the **latest observed version** of every resource ever seen. Resources that disappear from Asana (deleted, access lost) keep their old file, because there is no deletion reconciliation. A failed run may have refreshed some files and not others. So the directory is **not a transactionally consistent snapshot**, and every run logs `status=success`, `status=failed` or `status=canceled`.
 
 ## 4. API usage, rate limiting and retries
 
@@ -194,18 +184,18 @@ Worked example, 5,000 users and 3,000 projects:
 - **Every 5 minutes:** 80 requests, 16 req/min on average. The default pacing (1 request/s) finishes a run in about 80s plus latency, well within the 5-minute interval and 11% of the free-tier quota.
 - **Every 30 seconds:** 160 req/min would be needed. That's **more than the free-tier quota** (150/min) and more than the default pacing (60/min). At the default pacing a run takes at least ~80s, so the 30s slots in between are skipped and data actually refreshes about every 90s. Refreshing within 30s would need a paid tier and a raised limit (e.g. `--rate-limit=600`, 40% of the paid quota), and even then total per-request latency must stay under 30s: 80 requests × ~0.3s is about 24s, which leaves little margin.
 
-So a 30-second schedule **can't guarantee complete, fresh data every 30 seconds**. When `requests/run × max(spacing, latency)` exceeds the interval, or retries/429 cooldowns stretch a run, slots are skipped and the output is as fresh as the last completed run. Within one file, entries from early pages were fetched earlier than entries from late pages, so a long listing is not a point-in-time view.
+So a 30-second schedule **can't guarantee complete, fresh data every 30 seconds**. When `requests/run × max(spacing, latency)` exceeds the interval, or retries/429 cooldowns stretch a run, slots are skipped and the output is as fresh as the last completed run. Files updated early in a run are also fresher than ones updated late.
 
 ### Beyond this exercise (discussion only; not implemented)
 
 - **Incremental extraction.** Checked against the docs: `GET /users` and `GET /projects` have **no `modified_since`-style filter**, so every run is a full listing. Pagination offsets are temporary tokens that expire; they are not sync checkpoints and are never persisted.
 - **Events and webhooks.** Workspace-level webhooks support filters for *Project* (`added`, `removed`, `deleted`, `undeleted`, `changed`) and *Workspace Membership* (`added`, `removed`), but there are **no events for user profile changes** (name, email). The workspace events API (`GET /workspaces/{gid}/events`) is available only to a service account in an Enterprise+ domain, and its sync token expires after 4 hours of inactivity. A realistic design would be webhooks for project changes and membership adds/removes, plus a **periodic full reconciliation** (e.g. hourly or nightly) that re-lists everything, catches missed deliveries and user profile changes, and detects deletions.
 - **Multiple instances.** Quotas belong to the credentials, not the process. Several instances would need one shared budget: a single leader via a lease or lock, or a shared token bucket (e.g. in Redis), plus a shared 429 cooldown and staggered schedules. Otherwise N instances use N× the requests and hit 429s together. Two instances writing to the same directory never produce truncated files (atomic rename), but they waste quota and race on the same files; run one instance per output directory.
-- **Storage at scale.** A single array file per type is simple to ship but must be re-read in full by consumers and is rewritten on any change (tens of MB for 100k resources). At larger scale, write to a database or object store keyed by GID, with `last_seen_run` and `last_seen_at` columns; a successful full run can then mark resources not seen as deleted or inaccessible (tombstones), and consumers can pick a consistent run ID across users and projects.
+- **Storage and stale resources at scale.** Tens of thousands of small files are fine on a local filesystem but awkward to query or ship. At larger scale, write to a database or object store keyed by GID, with `last_seen_run` and `last_seen_at` columns. A successful full run can then mark resources not seen as deleted or inaccessible (tombstones) instead of leaving stale files forever, and consumers can pick a consistent run ID.
 
 ## 7. Known limitations
 
-- `users.json` and `projects.json` are each a complete listing, but they are published independently, so together they are not a consistent snapshot; a failed listing leaves the previous file in place until the next successful run.
+- The output is the latest observed state, not a consistent snapshot; stale files for deleted or inaccessible resources are kept.
 - Only resources visible to the PAT's user are exported. `email` can be `null`, and guests or pending invitees may be missing or partial. How the API treats pending invitations wasn't verified live here (see §1 step 5).
 - Asana documents that `GET /projects` "may timeout for large domains". The suggested `team` filter is deprecated, so this tool relies on pagination plus retries. A persistent timeout fails the run.
 - A very long `Retry-After` mid-listing can outlive the pagination offset. The next page then fails with `400`, the run fails, and the next run starts over.
@@ -221,7 +211,7 @@ Layout:
 cmd/asana-extractor/   main: config → wiring → once or scheduler; exit codes; offline E2E tests
 internal/config/       flags, env, .env parsing, validation
 internal/asana/        HTTP client: auth, pagination, pacer, retries, typed errors
-internal/storage/      streamed, atomic JSON array file per resource type
+internal/storage/      atomic per-resource JSON files
 internal/extractor/    one extraction run (users, then projects) + run stats/logging
 internal/scheduler/    immediate + fixed-grid scheduling with skip-on-overrun
 internal/asanatest/    in-memory fake Asana API for tests

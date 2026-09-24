@@ -27,21 +27,20 @@ func New(client *asana.Client, store *storage.Store, workspaceGID string, log *s
 	return &Extractor{client: client, store: store, workspace: workspaceGID, log: log, now: time.Now}
 }
 
-// Stats describes one run. Users/Projects count resources fetched (also
-// when a listing later failed); Written/Unchanged count array files.
+// Stats describes one run. Counts cover resources processed before any failure.
 type Stats struct {
 	Users     int
 	Projects  int
-	Written   int // files replaced with new content
-	Unchanged int // files whose content was identical and left untouched
+	Written   int // resource files created or replaced
+	Unchanged int // resource files whose content was identical and left untouched
 	Retries   int64
 	Duration  time.Duration
 }
 
-// Run extracts users, then projects, each into its own JSON array file. A
+// Run extracts users, then projects, writing one JSON file per resource. A
 // failure in one resource type does not prevent the other from being
-// attempted, unless ctx is canceled. Each page is streamed to a temp file
-// before the next is fetched, so memory is bounded by one page.
+// attempted, unless ctx is canceled. Each page is written before the next
+// is fetched, so memory is bounded by one page.
 func (e *Extractor) Run(ctx context.Context) (Stats, error) {
 	runID := e.runs.Add(1)
 	start := e.now()
@@ -50,10 +49,27 @@ func (e *Extractor) Run(ctx context.Context) (Stats, error) {
 
 	e.log.Info("extraction started", "run", runID, "workspace", e.workspace)
 
-	var usersErr, projectsErr error
-	st.Users, usersErr = extractKind(ctx, e, storage.KindUsers, e.client.ListUsers, &st)
+	usersErr := e.client.ListUsers(ctx, e.workspace, func(page []asana.User) error {
+		for _, u := range page {
+			if err := e.put(storage.KindUsers, u.GID, u, &st); err != nil {
+				return err
+			}
+			st.Users++
+		}
+		return nil
+	})
+
+	var projectsErr error
 	if ctx.Err() == nil {
-		st.Projects, projectsErr = extractKind(ctx, e, storage.KindProjects, e.client.ListProjects, &st)
+		projectsErr = e.client.ListProjects(ctx, e.workspace, func(page []asana.Project) error {
+			for _, p := range page {
+				if err := e.put(storage.KindProjects, p.GID, p, &st); err != nil {
+					return err
+				}
+				st.Projects++
+			}
+			return nil
+		})
 	}
 
 	st.Retries = e.client.Retries() - retriesBefore
@@ -84,39 +100,16 @@ func (e *Extractor) Run(ctx context.Context) (Stats, error) {
 	return st, nil
 }
 
-// extractKind streams every page of one resource type into its array file
-// and publishes the file only if the whole listing succeeded; otherwise the
-// previous file is kept. It returns the number of resources fetched.
-func extractKind[T any](ctx context.Context, e *Extractor, kind string,
-	list func(context.Context, string, func([]T) error) error, st *Stats,
-) (int, error) {
-	w, err := e.store.Begin(kind)
+func (e *Extractor) put(kind, gid string, v any, st *Stats) error {
+	res, err := e.store.Put(kind, gid, v)
 	if err != nil {
-		return 0, err
-	}
-	defer w.Abort() // no-op after a successful Commit
-
-	err = list(ctx, e.workspace, func(page []T) error {
-		for _, item := range page {
-			if err := w.Add(item); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return w.Count(), err
-	}
-
-	res, err := w.Commit()
-	if err != nil {
-		return w.Count(), err
+		return err
 	}
 	if res == storage.Unchanged {
 		st.Unchanged++
-	} else {
-		st.Written++
+		return nil
 	}
-	e.log.Info("resource file saved", "file", e.store.Path(kind), "count", w.Count(), "changed", res == storage.Written)
-	return w.Count(), nil
+	st.Written++
+	e.log.Debug("resource file saved", "file", e.store.Path(kind, gid))
+	return nil
 }

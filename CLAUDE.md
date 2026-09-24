@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Go CLI that extracts the users and projects of one Asana workspace into one JSON array file per resource type (`output/users.json`, `output/projects.json`), every 5m (default), every 30s, or once. **Stdlib only** — no third-party modules without explicit approval. Auth: Personal Access Token from `ASANA_ACCESS_TOKEN` (env or `.env`, never a flag). The directory is not a git repo (`git.enabled: false` in `.ai-factory/config.yaml`).
+Go CLI that extracts the users and projects of one Asana workspace into one JSON file per resource (`output/users/<gid>.json`, `output/projects/<gid>.json`), every 5m (default), every 30s, or once. **Stdlib only** — no third-party modules without explicit approval. Auth: Personal Access Token from `ASANA_ACCESS_TOKEN` (env or `.env`, never a flag). The directory is not a git repo (`git.enabled: false` in `.ai-factory/config.yaml`).
 
 ## Commands
 
@@ -29,7 +29,7 @@ Invariants that span packages — keep them when changing code:
 
 - Every HTTP attempt, including retries, goes through the single `pacer`; a 429 `Retry-After` becomes a shared cooldown and must never be capped or shortened.
 - Pagination stops only on `next_page == null`; filters/`opt_fields`/`limit=100` are resent on every page; only enum-documented `opt_fields` are requested (`owner`, not `owner.name`).
-- List callbacks stream each page into the array temp file before the next fetch (bounded memory); the file is renamed into place only after the full listing succeeds.
+- List callbacks write each page (one atomic temp+rename file per resource) before the next fetch (bounded memory); files of resources absent from later runs are kept.
 - Anything that waits takes injectable `now`/`sleep` so tests stay deterministic — no real sleeps for scheduling in tests.
 - Never log the token, headers, or resource payloads; errors carry op + status only.
 

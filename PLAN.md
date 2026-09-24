@@ -12,8 +12,8 @@ Design rationale and API evidence: `.ai-factory/research/asana-extractor-exercis
   - AC: `limit=100`, filters and `opt_fields` kept on every page, stops only on `next_page == null`, GIDs are strings, errors carry op + status without secrets.
 - [x] **4. Pacing + retries** (`internal/asana`) — shared pacer with 429 cooldown; retry policy.
   - AC: every attempt (incl. retries) goes through the pacer; `Retry-After` honored exactly; missing/invalid → jittered backoff; 4xx not retried; retries bounded; all waits cancel with ctx.
-- [x] **5. Storage** (`internal/storage`) — atomic JSON array writer (one file per resource type; changed from one file per resource on user request, see below).
-  - AC: `users.json`, `projects.json`, one JSON array each; streamed page by page into a temp file in the dest dir, renamed only after the full listing; temp removed on failure; existing file intact on failure.
+- [x] **5. Storage** (`internal/storage`) — atomic per-resource JSON writer.
+  - AC: `users/<gid>.json`, `projects/<gid>.json`, one object each; temp file in dest dir + rename; temp removed on failure; invalid GIDs rejected; existing file intact on failure.
 - [x] **6. Extractor** (`internal/extractor`) — one run: users then projects, page by page, counts + retries + duration.
   - AC: memory bounded to one page; a failure in one resource type still attempts the other; result reports counts and error.
 - [x] **7. Scheduler** (`internal/scheduler`) — immediate run, fixed grid, skip overruns, no backlog.
@@ -35,7 +35,7 @@ All commands in step 10 pass with evidence in the final report; no credentials i
 - Independent review found 1 medium defect (429 `Retry-After` dropped when retries were exhausted) → fixed + regression test (verified to fail on the old code). Low findings fixed: Retry-After overflow, rate-limit upper bound (1500), redirects not followed, token character validation, `.env` inline comments, temp-file cleanup age check, vacuous/flaky tests, README gaps.
 - `opt_fields` checked against the documented enum: `owner.name` is not listed for `GET /projects`, so only `owner` is requested.
 - Second self-review: config parse errors now reported together with validation errors (was short-circuiting); a second SIGINT/SIGTERM now force-exits. Re-verified with the real binary.
-- Live run by the user (2026-09-24 15:11, `make run-once`): `status=success`, users=2, projects=2, written=4, retries=0, 1.37s. Output files are single objects with the expected fields; `owner` is returned as `{gid}` only (name available via the user's entry). Only 2 of the required ≥3 users are visible — third invitation presumably not yet accepted; re-run after acceptance.
+- Live run by the user (2026-09-24 15:11, `make run-once`): `status=success`, users=2, projects=2, written=4, retries=0, 1.37s. Output files are single objects with the expected fields; `owner` is returned as `{gid}` only (name available via `users/<gid>.json`). Only 2 of the required ≥3 users are visible — third invitation presumably not yet accepted; re-run after acceptance.
 - Second live run (15:13): `written=0 unchanged=4` — idempotent upserts confirmed on real data; still users=2.
 
 ## Change: JSON array output (2026-09-24 15:21, user request via `/aif-fix`)
@@ -44,3 +44,9 @@ All commands in step 10 pass with evidence in the final report; no credentials i
 - Regression check: `TestOnceEndToEnd` + `TestEmptyWorkspaceWritesEmptyArrays` rewritten to expect the arrays; failed before the change (`output dir contents: [projects users]`), pass after.
 - Storage streams elements into a temp file and renames only after the full listing succeeds; a failed listing keeps the previous file (`TestFailedListingKeepsPreviousFileAndStillExtractsProjects`).
 - Live run after the change (2026-09-24 15:23, `make run-once`): `status=success`, users=3, projects=2, `users.json` and `projects.json` written as arrays in 1.31s, retries=0. Exercise minimums (≥3 users, ≥2 projects) met.
+
+## Change reverted: back to one file per resource (2026-09-24 15:29, user request via `/aif-fix`)
+
+- Output is again `output/users/<gid>.json` and `output/projects/<gid>.json`, one object per file, as the exercise specifies.
+- Regression check: `TestOnceEndToEnd` rewritten to assert the exact per-file layout; failed on the array version (`output dir: projects.json,users.json`), passes after the revert.
+- Added `TestFailureMidListingKeepsWrittenPages` (per-file consistency: page 1 files stay when page 2 fails).
