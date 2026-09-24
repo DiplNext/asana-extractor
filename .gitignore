@@ -1,0 +1,21 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Generated exports
+/output/
+
+# Build artifacts
+/bin/
+*.test
+*.out
+coverage.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Personal Claude Code settings
+.claude/settings.local.json
