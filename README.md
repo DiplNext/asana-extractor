@@ -186,11 +186,35 @@ Worked example, 5,000 users and 3,000 projects:
 
 So a 30-second schedule **can't guarantee complete, fresh data every 30 seconds**. When `requests/run × max(spacing, latency)` exceeds the interval, or retries/429 cooldowns stretch a run, slots are skipped and the output is as fresh as the last completed run. Files updated early in a run are also fresher than ones updated late.
 
+### Measured: offline scale probe
+
+A one-off probe ran the extractor against the in-memory fake API (`internal/asanatest`) at `--rate-limit=1500` (Asana's documented paid-tier quota). For each workspace size it ran twice in a row into the same output directory: first into an empty directory, then with identical data. Machine: Apple M3 Pro, macOS 27.0, Go 1.27.1, local APFS disk.
+
+| Workspace | Run | Requests (users + projects) | Files written | Files unchanged | Duration |
+|---|---|---|---|---|---|
+| 5,000 users, 3,000 projects | 1 (empty dir) | 50 + 30 = 80 | 8,000 | 0 | 37.0s |
+| | 2 (identical data) | 50 + 30 = 80 | 0 | 8,000 | 3.2s |
+| 50,000 users, 30,000 projects | 1 (empty dir) | 500 + 300 = 800 | 80,000 | 0 | **7m 21s** |
+| | 2 (identical data) | 500 + 300 = 800 | 0 | 80,000 | 32.0s |
+
+Peak Go heap was 7.2 MiB for the small workspace and 63 MiB for the large one. Both figures are for the whole test process, including the fake server that holds every record in memory (80,000 records in the large case), so the probe doesn't isolate the extractor's own share. The extractor itself holds one page (100 resources) at a time; see `internal/extractor/extractor.go`. The large output directory totals 12.3 MiB across 80,000 files.
+
+What this shows:
+
+- **Requests match the formula** in both cases (80 and 800), with no per-resource detail requests.
+- **Pacing sets the floor for an unchanged run:** 799 gaps × 40ms ≈ 32.0s, exactly what run 2 took. Comparing 80,000 existing files against the new content fits inside that pacing. At the default 60/min the same run would take at least 799s ≈ 13.3 min. So a 5-minute schedule at 50k/30k needs a raised `--rate-limit` on a paid domain; a free-tier domain (150/min) can't do it, since 800 requests take at least 5.3 min.
+- **A first run at 50k/30k takes longer than the 5-minute interval** (7m 21s). The scheduler handles this without a backlog: the 5m slot is skipped and the next run starts at 10m. Later runs only rewrite changed files, so they drop back to about the 32s pacing floor.
+- **On this machine, file durability costs more than the API on a first or heavily changed run:** about 5.5ms per written file. Each changed file is `fsync`ed before its rename, and on macOS Go's `File.Sync` does a full flush (`F_FULLFSYNC`).
+- **A 30-second interval is impossible at 50k/30k:** 800 requests in 30s would need 1,600 req/min, above the paid quota of 1,500.
+
+Not measured here: real Asana response times at this volume (the fake API answers instantly, so real runs will be slower than the pacing floor), `fsync` cost on Linux or other filesystems, and whether `GET /projects` times out on very large real domains, which Asana's docs warn it may.
+
 ### Beyond this exercise (discussion only; not implemented)
 
 - **Incremental extraction.** Checked against the docs: `GET /users` and `GET /projects` have **no `modified_since`-style filter**, so every run is a full listing. Pagination offsets are temporary tokens that expire; they are not sync checkpoints and are never persisted.
 - **Events and webhooks.** Workspace-level webhooks support filters for *Project* (`added`, `removed`, `deleted`, `undeleted`, `changed`) and *Workspace Membership* (`added`, `removed`), but there are **no events for user profile changes** (name, email). The workspace events API (`GET /workspaces/{gid}/events`) is available only to a service account in an Enterprise+ domain, and its sync token expires after 4 hours of inactivity. A realistic design would be webhooks for project changes and membership adds/removes, plus a **periodic full reconciliation** (e.g. hourly or nightly) that re-lists everything, catches missed deliveries and user profile changes, and detects deletions.
 - **Multiple instances.** Quotas belong to the credentials, not the process. Several instances would need one shared budget: a single leader via a lease or lock, or a shared token bucket (e.g. in Redis), plus a shared 429 cooldown and staggered schedules. Otherwise N instances use N× the requests and hit 429s together. Two instances writing to the same directory never produce truncated files (atomic rename), but they waste quota and race on the same files; run one instance per output directory.
+- **Durability cost at scale.** Per-file `fsync` dominated the probe's first run (see above). If that matters, make `fsync` optional (atomic rename alone already prevents readers from seeing partial files; `fsync` only adds safety after a power loss) or batch writes into fewer, larger files.
 - **Storage and stale resources at scale.** Tens of thousands of small files are fine on a local filesystem but awkward to query or ship. At larger scale, write to a database or object store keyed by GID, with `last_seen_run` and `last_seen_at` columns. A successful full run can then mark resources not seen as deleted or inaccessible (tombstones) instead of leaving stale files forever, and consumers can pick a consistent run ID.
 
 ## 7. Known limitations

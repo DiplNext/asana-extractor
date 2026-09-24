@@ -50,3 +50,10 @@ All commands in step 10 pass with evidence in the final report; no credentials i
 - Output is again `output/users/<gid>.json` and `output/projects/<gid>.json`, one object per file, as the exercise specifies.
 - Regression check: `TestOnceEndToEnd` rewritten to assert the exact per-file layout; failed on the array version (`output dir: projects.json,users.json`), passes after the revert.
 - Added `TestFailureMidListingKeepsWrittenPages` (per-file consistency: page 1 files stay when page 2 fails).
+
+## Additional verification (2026-09-24)
+
+- `make live-test` against the real workspace: PASS, users=3 (with email=3), projects=2 (archived=0), retries=0.
+- Offline scale probes at `--rate-limit=1500` (results in README §6 "Measured: offline scale probe"):
+  - 5k users / 3k projects: 80 requests, first run 37.0s, unchanged run 3.2s.
+  - 50k users / 30k projects: 800 requests, first run 7m21s, unchanged run 32.0s.
